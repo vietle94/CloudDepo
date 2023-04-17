@@ -19,7 +19,7 @@ for file in file_paths:
                  (np.diff(df['beta'], axis=1) > 0) *
                  (df['beta'][:, :-1] > 5e-7))  # threshold for all the values in a cloud
 
-    cloudbase = median_filter(cloudbase, size=(1, 7)) | cloudbase.values
+    cloudbase = median_filter(cloudbase, size=(1, 7))
 
     c = np.where(np.concatenate((cloudbase[:, 0].reshape(-1, 1), cloudbase[:, :-1] != cloudbase[:, 1:],
                                  np.repeat(True, cloudbase.shape[0]).reshape(-1, 1)), axis=1))
