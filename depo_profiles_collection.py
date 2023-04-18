@@ -34,6 +34,8 @@ for file in file_paths:
     result = pd.DataFrame({})
     for i, _ in enumerate(cloudbase_result):
         time = df['time'][cloudbase_result[i, 0]].values
+        cloudbase_result[i, 2] = cloudbase_result[i, 2] + np.argmin(
+            df['depolarisation'][cloudbase_result[i, 0], cloudbase_result[i, 2]:cloudbase_result[i, 3]].values)
         if df['depolarisation'][cloudbase_result[i, 0], cloudbase_result[i, 2]].values > 0.05:
             continue
         # if df['beta'][cloudbase_result[i, 0], cloudbase_result[i, 3]].values < 2e-5:
