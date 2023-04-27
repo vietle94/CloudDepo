@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import median_filter
 from matplotlib.widgets import SpanSelector
-
+import xarray as xr
 # %%
 
 
@@ -39,47 +39,67 @@ def cloud_base(df):
     e = np.array([[i, np.diff(x)[0], x[0], x[1]]
                  for i, x in enumerate(d) if (x.size == 3) & (x[0] > 30)])  # first height must be > 150m
 
-    cloudbase_result = e[(e[:, 1] > 10) & (e[:, 1] < 30) & (e[:, 2] < 700)]
-    result = pd.DataFrame({})
-    for i, _ in enumerate(cloudbase_result):
-        time = df['time'][cloudbase_result[i, 0]].values
-        cloudbase_result[i, 2] = cloudbase_result[i, 2] + np.argmin(
-            df['depolarisation'][cloudbase_result[i, 0], cloudbase_result[i, 2]:cloudbase_result[i, 3]].values)
-        if df['depolarisation'][cloudbase_result[i, 0], cloudbase_result[i, 2]].values > 0.05:
+    # cloud thickness before attenuation must be 50m to 150m and max height < 3500m
+    # cloudbase_result = e[(e[:, 1] > 7) & (e[:, 1] < 30) & (e[:, 2] < 700)]
+    if e.size < 1:
+        print('no liquid clouds')
+        return None
+    cloudbase_result = e[(e[:, 1] < 30) & (e[:, 2] < 700)]
+
+    if cloudbase_result.size < 1:
+        print('no liquid clouds')
+        return None
+    result_ = []
+    for i in cloudbase_result:
+        i[2] = i[2] + np.argmin(df['depolarisation'].isel(time=i[0],
+                                range=slice(i[2], i[3])).values)
+        profile = df.isel(time=i[0], range=slice(i[2], i[2]+40))
+        depo = profile['depolarisation'].values
+        if depo[0] > 0.02:
             continue
-        # if df['beta'][cloudbase_result[i, 0], cloudbase_result[i, 3]].values < 2e-5:
-        #     continue
-        depo = df['depolarisation'][cloudbase_result[i, 0],
-                                    # cloudbase_result[0, 2]:cloudbase_result[0, 3]].values
-                                    cloudbase_result[i, 2]:cloudbase_result[i, 2]+40].values
-        beta = df['beta'][cloudbase_result[i, 0],
-                          # cloudbase_result[0, 2]:cloudbase_result[0, 3]].values
-                          cloudbase_result[i, 2]:cloudbase_result[i, 2]+40].values
-        range = df['range'][cloudbase_result[i, 2]:cloudbase_result[i, 2]+40].values
-        depth = range - range[0]
-        n_no_att = cloudbase_result[i, 3] + 1 - cloudbase_result[i, 2]
 
+        depth = np.arange(40)
+        time = profile['time'].values
+        range = profile['range'].values
+        beta = profile['beta'].values
+        n_no_att = i[3] + 1 - i[2]
         no_att = np.concatenate([np.repeat(True, n_no_att), np.repeat(False, 40 - n_no_att)])
-        result_ = pd.DataFrame({'datetime': time,
-                                'depo': depo,
-                                'beta': np.log10(beta),
-                                'range': range,
-                                'depth': depth,
-                                'no_att': no_att})
-        result = result.append(result_, ignore_index=True)
+        if beta[n_no_att] < 2e-5:  # beta at max must be a cloud
+            continue
+        result_.append(xr.Dataset(
+            data_vars=dict(
+                depo=(["time", "depth"], [depo]),
+                range=(["time", "depth"], [range]),
+                beta=(["time", "depth"], [beta]),
+                no_att=(["time", "depth"], [no_att])
+            ),
+            coords=dict(
+                time=[time],
+                depth=(["depth"], depth)
+            )))
 
-    if result.shape[0] < 1:  # check if there is any liquid clouds
+    if len(result_) < 1:  # check if there is any liquid clouds
         print('no liquid clouds')
-        return 'no liquid clouds'
+        return None
+    result = xr.concat(result_, dim="time")
 
-    result = result.set_index('datetime')
-    result['cluster_check'] = result['depth'].resample('10min').transform('count') > 50*40
-    result = result[result['cluster_check']].reset_index()
-    result = result.drop('cluster_check', axis=1)
-    if result.shape[0] < 1:  # check if there is any liquid clouds
+    temp = pd.DataFrame({'time': pd.Series(result['time']),
+                         'range': pd.Series(result['range'].values[:, 0])})
+    rolling20 = temp.set_index('time').rolling('20min', center=True)
+    check_cluster = rolling20.count()
+    check_stable_level = (rolling20.max() - rolling20.min())
+    # more than 15 profiles every10mins, and fluctuation height less than 200m
+    liquid_time = check_cluster[(check_cluster['range'] > 50) &
+                                (check_stable_level['range'] < 200)].index
+
+    # temp = pd.DataFrame({'time': pd.Series(result['time']),
+    #                      'range': pd.Series(result['range'])})
+    # check = temp.set_index('time').rolling('10min', center=True).count()
+    # liquid_time = check[check['range'] > 15].index
+    result = result.sel(time=liquid_time)
+    if result.time.size < 1:
         print('no liquid clouds')
-        return 'no liquid clouds'
-
+        return None
     return result
 
 

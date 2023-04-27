@@ -1,90 +1,114 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import xarray as xr
+import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
-from scipy.ndimage import median_filter
 import glob
+import matplotlib.dates as mdates
+import func
+from matplotlib.widgets import SpanSelector
+from sklearn.linear_model import LinearRegression
+myFmt = mdates.DateFormatter('%H:%M')
 
 # %%
-path = r'C:\Users\le\Desktop\Data\Kenttarova/'
-file_paths = glob.glob(path + '/*.nc')
-for file in file_paths:
-    # df = xr.open_dataset(file_paths[2])
-    df = xr.open_dataset(file)
-    df = df.where(df.range < 4000, drop=True)
-    file_date = np.datetime_as_string(df.time[0], 'D').replace('-', '')
+path = "/home/le/Data/Kenttarova"
+files_radar = glob.glob(path + '/*rpg*.nc')
+for file_ceilo in sorted(glob.glob(path + '/*cl61*.nc')):
+
+    ceilo = xr.open_dataset(file_ceilo)
+    ceilo = ceilo.where(ceilo.range < 4000, drop=True)
+    file_date = file_ceilo.split('/')[-1].split('_')[0]
+    file_radar = [x for x in files_radar if file_date in x]
     print(file_date)
-    cloudbase = ((np.diff(df['depolarisation'], axis=1) > 0) *
-                 (np.diff(df['beta'], axis=1) > 0) *
-                 (df['beta'][:, :-1] > 5e-7))  # threshold for all the values in a cloud
+    if len(file_radar) > 0:
+        radar = xr.open_dataset(file_radar[0])
+        radar = radar.where(radar.range < 4000, drop=True)
+        radar_yes = True
+        print('radar files available')
+    else:
+        radar_yes = False
 
-    cloudbase = median_filter(cloudbase, size=(1, 7))
-
-    c = np.where(np.concatenate((cloudbase[:, 0].reshape(-1, 1), cloudbase[:, :-1] != cloudbase[:, 1:],
-                                 np.repeat(True, cloudbase.shape[0]).reshape(-1, 1)), axis=1))
-    d = np.split(c[1], np.unique(c[0], return_index=True)[1][1:])
-
-    # There is no gap in the increasing depo+beta and the first range gate must be larger than 150m
-    # the Height will be like x[0]:x[1], meaning ignore the last x[1]
-    e = np.array([[i, np.diff(x)[0], x[0], x[1]]
-                 for i, x in enumerate(d) if (x.size == 3) & (x[0] > 30)])  # first height must be > 150m
-
-    cloudbase_result = e[(e[:, 1] > 10) & (e[:, 1] < 30) & (e[:, 2] < 700)]
-    result = pd.DataFrame({})
-    for i, _ in enumerate(cloudbase_result):
-        time = df['time'][cloudbase_result[i, 0]].values
-        cloudbase_result[i, 2] = cloudbase_result[i, 2] + np.argmin(
-            df['depolarisation'][cloudbase_result[i, 0], cloudbase_result[i, 2]:cloudbase_result[i, 3]].values)
-        if df['depolarisation'][cloudbase_result[i, 0], cloudbase_result[i, 2]].values > 0.05:
-            continue
-        # if df['beta'][cloudbase_result[i, 0], cloudbase_result[i, 3]].values < 2e-5:
-        #     continue
-        depo = df['depolarisation'][cloudbase_result[i, 0],
-                                    # cloudbase_result[0, 2]:cloudbase_result[0, 3]].values
-                                    cloudbase_result[i, 2]:cloudbase_result[i, 2]+40].values
-        beta = df['beta'][cloudbase_result[i, 0],
-                          # cloudbase_result[0, 2]:cloudbase_result[0, 3]].values
-                          cloudbase_result[i, 2]:cloudbase_result[i, 2]+40].values
-        range = df['range'][cloudbase_result[i, 2]:cloudbase_result[i, 2]+40].values
-        depth = range - range[0]
-        n_no_att = cloudbase_result[i, 3] + 1 - cloudbase_result[i, 2]
-
-        no_att = np.concatenate([np.repeat(True, n_no_att), np.repeat(False, 40 - n_no_att)])
-        result_ = pd.DataFrame({'datetime': time,
-                                'depo': depo,
-                                'beta': np.log10(beta),
-                                'range': range,
-                                'depth': depth,
-                                'no_att': no_att})
-        result = result.append(result_, ignore_index=True)
-
-    if result.shape[0] < 1:  # check if there is any liquid clouds
+    result = func.cloud_base(ceilo)
+    if result is None:
         continue
-
-    result = result.set_index('datetime')
-    result['cluster_check'] = result['depth'].resample('10min').transform('count') > 50*40
-    result = result[result['cluster_check']].reset_index()
-    result = result.drop('cluster_check', axis=1)
-    if result.shape[0] < 1:  # check if there is any liquid clouds
-        continue
-
-    result.to_csv(path + file_date + '_clouddepo.csv', index=False)
-    first = result.groupby('datetime').first().reset_index()
+    result.to_netcdf(path + '/result/' + file_date + '_cloudbase.nc')
+    first = result.isel(depth=0)
     fig, ax = plt.subplots(2, 1, figsize=(16, 6), sharex=True)
-    p = ax[0].pcolormesh(df['time'].values, df['range'], df['beta'].T,
+    p = ax[0].pcolormesh(ceilo['time'].values, ceilo['range'], ceilo['beta'].T,
                          norm=LogNorm(vmin=1e-7, vmax=1e-4))
     colorbar = fig.colorbar(p, ax=ax[0])
-    ax[0].plot(first['datetime'], first['range'], 'r.', markersize=0.5)
-    ax[0].set_ylim([0, 4000])
+    ax[0].plot(first['time'], first['range'], 'r.', markersize=0.5)
+    # ax[0].set_ylim([0, 4000])
 
-    p = ax[1].pcolormesh(df['time'].values, df['range'], df['depolarisation'].T,
+    p = ax[1].pcolormesh(ceilo['time'].values, ceilo['range'], ceilo['depolarisation'].T,
                          vmin=0, vmax=0.5)
     colorbar = fig.colorbar(p, ax=ax[1])
-    ax[1].plot(first['datetime'], first['range'], 'r.', markersize=0.5)
-    ax[1].set_ylim([0, 4000])
-    fig.savefig(path + file_date + '_cloud.png', bbox_inches='tight', dpi=600,
-                transparent=False)
+    ax[1].plot(first['time'], first['range'], 'r.', markersize=0.5)
+    # ax[1].set_ylim([0, 4000])
+    fig.savefig(path + '/Img/' + file_date + '_cloud.png',
+                bbox_inches='tight', dpi=600)
     plt.close('all')
 
-# %%
+    fig, ax = plt.subplots(3, 2, figsize=(16, 12), constrained_layout=True)
+    coef = []
+    for i in result['time']:
+        profile = result.sel(time=i)
+        ax[1, 0].plot(profile['depo'], profile['depth'], alpha=0.5)
+        ax[1, 1].plot(profile['beta'], profile['depth'], alpha=0.5)
+        model = LinearRegression()
+        profile_ = pd.DataFrame({'depo': profile['depo'].values,
+                                 'depth': profile['depth'].values})
+        profile_ = profile_.iloc[:20, :]
+        profile_ = profile_.dropna(axis=0)
+        model.fit(profile_['depth'].values.reshape(-1, 1), profile_['depo'].values)
+        coef.append(model.coef_[0])
+        ax[2, 0].plot(model.predict(profile_['depth'].values.reshape(-1, 1)),
+                      profile_['depth'], alpha=0.5)
+
+    ax[2, 1].plot(result['time'].values, coef, '.')
+    if radar_yes:
+        axtwin = ax[2, 1].twinx()
+        axtwin.plot(radar['time'], radar['lwp'], 'r.')
+        axtwin.set_ylabel('LWP', color='r')
+        axtwin.grid()
+
+    ax[1, 0].set_xlim([0, 0.2])
+    ax[2, 0].set_xlim([0, 0.2])
+    ax[1, 1].set_xscale('log')
+    ax[2, 1].xaxis.set_major_formatter(myFmt)
+    for ax_ in ax.flatten():
+        ax_.grid()
+    ax[1, 0].set_xlabel(r'$\delta$')
+    ax[2, 0].set_xlabel('fitted $\delta$ to \n 20th range gates')
+    ax[2, 1].set_ylabel('Slope (a) of \n $\delta$ = a*r + b', color='tab:blue')
+    ax[2, 1].set_xlabel('Time')
+    ax[2, 1].set_ylim([0.0003, 0.003])
+    ax[1, 1].set_xlabel(r'$\beta$')
+    for ax_ in ax.flatten()[:-1]:
+        ax_.set_ylim([0, 40])
+        ax_.set_ylabel('Depth [range gate]')
+
+    H, depo_edges, range_edges = np.histogram2d(result['depo'].values.flatten(),
+                                                np.tile(result['depth'], result['depo'].shape[0]),
+                                                bins=[np.linspace(0, 0.2, 20), np.arange(40)])
+    X, Y = np.meshgrid(depo_edges, range_edges)
+    H[H < 1] = np.nan
+    p = ax[0, 0].pcolormesh(X, Y, H.T)
+    ax[0, 0].set_ylabel('Depth [range gate]')
+    ax[0, 0].set_xlabel(r'$\delta$')
+    colorbar = fig.colorbar(p, ax=ax[0, 0])
+    colorbar.ax.set_ylabel('N')
+
+    H, depo_edges, range_edges = np.histogram2d(np.log10(result['beta'].values).flatten(),
+                                                np.tile(result['depth'], result['beta'].shape[0]),
+                                                bins=[np.linspace(-7, -3, 20), np.arange(40)])
+    X, Y = np.meshgrid(depo_edges, range_edges)
+    H[H < 1] = np.nan
+    p = ax[0, 1].pcolormesh(X, Y, H.T)
+    ax[0, 1].set_ylabel('Depth [range gate]')
+    ax[0, 1].set_xlabel(r'$\beta$')
+    colorbar = fig.colorbar(p, ax=ax[0, 1])
+    colorbar.ax.set_ylabel('N')
+    fig.savefig(path + '/Img/' + file_date + '_cloudstat.png',
+                bbox_inches='tight', dpi=600)
+    plt.close('all')
